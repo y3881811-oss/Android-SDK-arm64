@@ -1,0 +1,102 @@
+name: Build ARM64 Android SDK
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 每周一 UTC 00:00 自动构建（可选）
+    - cron: '0 0 * * 1'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set build date
+        id: date
+        run: |
+          echo "tag=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+          echo "date=$(date +'%Y-%m-%d %H:%M UTC')" >> $GITHUB_OUTPUT
+
+      - name: Download official cmdline-tools
+        run: |
+          mkdir -p sdk/cmdline-tools
+          cd sdk/cmdline-tools
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip
+          unzip -q commandlinetools-linux-*.zip
+          mv cmdline-tools latest
+          rm -f commandlinetools-linux-*.zip
+
+      - name: Setup Android SDK env
+        run: |
+          echo "ANDROID_HOME=$GITHUB_WORKSPACE/sdk" >> $GITHUB_ENV
+          echo "$GITHUB_WORKSPACE/sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$GITHUB_WORKSPACE/sdk/platform-tools" >> $GITHUB_PATH
+
+      - name: Install platforms with sdkmanager
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-28" "platforms;android-34" "platforms;android-35"
+
+      - name: Download ARM64 build-tools and platform-tools
+        run: |
+          cd /tmp
+          wget -q https://github.com/lzhiyong/android-sdk-tools/releases/download/35.0.2/android-sdk-tools-static-aarch64.zip -O arm64-tools.zip
+          unzip -q arm64-tools.zip -d arm64-tools
+
+      - name: Replace x86_64 with ARM64 binaries
+        run: |
+          cd $GITHUB_WORKSPACE/sdk
+          rm -rf build-tools platform-tools
+          cp -r /tmp/arm64-tools/build-tools ./
+          cp -r /tmp/arm64-tools/platform-tools ./
+          chmod +x platform-tools/adb platform-tools/fastboot 2>/dev/null || true
+          chmod +x build-tools/*/aapt2 build-tools/*/zipalign build-tools/*/dexdump 2>/dev/null || true
+
+      - name: Package SDK
+        run: |
+          cd $GITHUB_WORKSPACE
+          # 用日期命名压缩包，便于识别
+          tar -czf android-sdk-arm64-${{ steps.date.outputs.tag }}.tar.gz sdk/
+          ls -lh android-sdk-arm64-*.tar.gz
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: sdk-${{ steps.date.outputs.tag }}
+          name: "Android SDK ARM64 - ${{ steps.date.outputs.date }}"
+          body: |
+            ## Android SDK ARM64 构建
+
+            - **构建日期**: ${{ steps.date.outputs.date }}
+            - **平台**: platforms;android-28, android-34, android-35
+            - **build-tools**: lzhiyong ARM64 静态编译版 (35.0.2)
+            - **platform-tools**: lzhiyong ARM64 静态编译版 (35.0.2)
+            - **JDK**: Temurin 17
+
+            ### 使用方法
+            ```bash
+            tar -xzf android-sdk-arm64-${{ steps.date.outputs.tag }}.tar.gz
+            export ANDROID_HOME=$PWD/sdk
+            export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
+            ```
+
+            ### 验证
+            ```bash
+            sdkmanager --version
+            adb version
+            ```
+          files: android-sdk-arm64-${{ steps.date.outputs.tag }}.tar.gz
+          draft: false
+          prerelease: false
